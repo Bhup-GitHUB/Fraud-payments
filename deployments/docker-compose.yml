@@ -1,0 +1,125 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fraud
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fraud"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  redpanda:
+    image: redpandadata/redpanda:v24.1.7
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+    ports:
+      - "9092:9092"
+      - "19092:19092"
+
+  model-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: model-service
+    environment:
+      APP_PORT: 8082
+    ports:
+      - "8082:8082"
+
+  risk-engine:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: risk-engine
+    environment:
+      APP_PORT: 8081
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/fraud?sslmode=disable
+      REDIS_ADDR: redis:6379
+      MODEL_SERVICE_URL: http://model-service:8082
+      MIGRATIONS_DIR: /app/migrations
+    depends_on:
+      - postgres
+      - redis
+      - model-service
+    ports:
+      - "8081:8081"
+
+  payment-api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: payment-api
+    environment:
+      APP_PORT: 8080
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/fraud?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      RISK_ENGINE_URL: http://risk-engine:8081
+      MIGRATIONS_DIR: /app/migrations
+    depends_on:
+      - postgres
+      - redis
+      - redpanda
+      - risk-engine
+    ports:
+      - "8080:8080"
+
+  stream-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: stream-worker
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/fraud?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      MIGRATIONS_DIR: /app/migrations
+    depends_on:
+      - postgres
+      - redis
+      - redpanda
+
+  demo-seeder:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: demo-seeder
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/fraud?sslmode=disable
+      REDIS_ADDR: redis:6379
+      MIGRATIONS_DIR: /app/migrations
+    depends_on:
+      - postgres
+      - redis
+    profiles:
+      - tools
